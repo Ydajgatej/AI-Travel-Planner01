@@ -57,8 +57,7 @@ export default function PlansPage() {
 	const [expenseForm, setExpenseForm] = React.useState({ amount: '', category: '交通', currency: 'CNY', note: '', date: '' });
 	const [expenseSaving, setExpenseSaving] = React.useState(false);
 	const [expenseLoading, setExpenseLoading] = React.useState(false);
-	const [analysis, setAnalysis] = React.useState<string>('');
-	const [analyzing, setAnalyzing] = React.useState(false);
+	// 分析拆分至独立页面
 
 	React.useEffect(() => {
 		if (!supabase) return;
@@ -227,32 +226,7 @@ export default function PlansPage() {
 	}, {});
 	const pieData = Object.entries(byCategory).map(([label, value]) => ({ label, value }));
 
-	async function analyzeBudget() {
-		if (!selected) return;
-		setAnalyzing(true);
-		setAnalysis('');
-		try {
-			const res = await fetch('/api/budget/analyze', {
-				method: 'POST',
-				headers: {
-					'Content-Type': 'application/json',
-					'X-LLM-API-Key': localStorage.getItem('llm_api_key') ?? '',
-					'X-LLM-Model': localStorage.getItem('llm_model') ?? ''
-				},
-				body: JSON.stringify({
-					plan: selected,
-					expenses: expenses
-				})
-			});
-			if (!res.ok) throw new Error('分析失败');
-			const data = await res.json();
-			setAnalysis(data.analysis || '');
-		} catch (e: any) {
-			alert(e.message || '分析失败');
-		} finally {
-			setAnalyzing(false);
-		}
-	}
+	// 已迁移分析逻辑到 /plans/[id]/analysis
 
 	async function addSpot(e: React.FormEvent) {
 		e.preventDefault();
@@ -431,10 +405,13 @@ export default function PlansPage() {
 						{selected.destination && <small>目的地：{selected.destination}</small>}
 						{typeof selected.budget === 'number' && <small>预算：{selected.budget}</small>}
 						<small>人数：{selected.num_people ?? '-'}</small>
-						<pre style={{ whiteSpace: 'pre-wrap' }}>{selected.content}</pre>
+						<div className="scroll-area">
+							<pre style={{ whiteSpace: 'pre-wrap', margin: 0 }}>{selected.content}</pre>
+						</div>
 
-						<div className="col" style={{ gap: 12 }}>
-							<h4 style={{ margin: 0 }}>预算管理</h4>
+						<div className="grid-2">
+							<div className="card col" style={{ gap: 12 }}>
+								<h4 style={{ margin: 0 }}>预算管理</h4>
 							<form className="col" onSubmit={addExpense}>
 								<div className="row" style={{ flexWrap: 'wrap', gap: 8 }}>
 									<input
@@ -511,9 +488,7 @@ export default function PlansPage() {
 								)}
 							</div>
 							<div className="row">
-								<button className="ghost" onClick={analyzeBudget} disabled={analyzing}>
-									{analyzing ? '分析中...' : 'AI 预算分析'}
-								</button>
+								<a className="ghost" href={selected ? `/plans/${selected.id}/analysis` : '#'}>AI 预算分析</a>
 								<button
 									className="ghost"
 									onClick={() => {
@@ -580,18 +555,18 @@ export default function PlansPage() {
 									<PieChart data={pieData} />
 								</div>
 							)}
-							{analysis && (
-								<div className="card">
-									<h4 style={{ marginTop: 0 }}>分析结果</h4>
-									<pre style={{ whiteSpace: 'pre-wrap' }}>{analysis}</pre>
-								</div>
-							)}
-						</div>
-						<div className="col" style={{ gap: 12 }}>
-							<h4 style={{ margin: 0 }}>地图标记</h4>
+							</div>
+							<div className="card col" style={{ gap: 12 }}>
+								<h4 style={{ margin: 0 }}>地图标记</h4>
 							<MapAmap
 								markers={mapMarkers}
 								center={mapCenter}
+								onMarkerClick={(m) => {
+									const [lng, lat] = m.position;
+									const name = encodeURIComponent(m.title || '目的地');
+									const url = `https://uri.amap.com/marker?position=${lng},${lat}&name=${name}`;
+									window.open(url, '_blank');
+								}}
 								onMapClick={pos => setNewSpot(prev => ({ ...prev, lng: pos[0].toFixed(6), lat: pos[1].toFixed(6) }))}
 								zoom={mapCenter ? 12 : 4}
 							/>
@@ -676,13 +651,20 @@ export default function PlansPage() {
 										<div key={spot.id} className="card" style={{ padding: 10 }}>
 											<div className="row" style={{ justifyContent: 'space-between' }}>
 												<strong>{spot.name}</strong>
-												<button className="ghost" onClick={() => deleteSpot(spot.id)}>删除</button>
+												<div className="row" style={{ gap: 8 }}>
+													<button className="ghost" onClick={() => {
+														const url = `https://uri.amap.com/marker?position=${spot.longitude},${spot.latitude}&name=${encodeURIComponent(spot.name)}`;
+														window.open(url, '_blank');
+													}}>导航</button>
+													<button className="ghost" onClick={() => deleteSpot(spot.id)}>删除</button>
+												</div>
 											</div>
 											<small>坐标：{spot.latitude.toFixed(6)}, {spot.longitude.toFixed(6)}</small>
 											{spot.description && <small>备注：{spot.description}</small>}
 										</div>
 									))
 								)}
+							</div>
 							</div>
 						</div>
 					</div>

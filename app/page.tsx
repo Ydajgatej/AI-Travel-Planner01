@@ -28,8 +28,52 @@ export default function Page() {
 	const [budget, setBudget] = React.useState<string>('');
 	const [clickedLng, setClickedLng] = React.useState<string>('');
 	const [clickedLat, setClickedLat] = React.useState<string>('');
+	const [destCenter, setDestCenter] = React.useState<[number, number] | undefined>(undefined);
+	const [destMarker, setDestMarker] = React.useState<{ position: [number, number]; title?: string } | null>(null);
+	const [region, setRegion] = React.useState<string>(''); // 国家/城市（可选），用于提高地理编码精度
 	const [saving, setSaving] = React.useState(false);
 	const { user } = React.useContext(AuthContext);
+
+	React.useEffect(() => {
+		let timer: any;
+		if (form.destination && form.destination.trim().length > 0) {
+			timer = setTimeout(async () => {
+				try {
+					const key = localStorage.getItem('amap_web_key') || '';
+					const qs = new URLSearchParams();
+					qs.set('address', form.destination.trim());
+					if (region.trim()) qs.set('city', region.trim());
+					const resp = await fetch(`/api/geocode?${qs.toString()}`, {
+						headers: key ? { 'X-AMAP-KEY': key } : undefined
+					});
+					const data = await resp.json();
+					const loc = data?.geocodes?.[0]?.location;
+					if (loc) {
+						const [lngStr, latStr] = String(loc).split(',');
+						const lng = Number(lngStr);
+						const lat = Number(latStr);
+						if (!Number.isNaN(lng) && !Number.isNaN(lat)) {
+							const pos: [number, number] = [lng, lat];
+							setDestCenter(pos);
+							setDestMarker({ position: pos, title: form.destination.trim() });
+						}
+					}
+				} catch {}
+			}, 500);
+		} else {
+			setDestCenter(undefined);
+			setDestMarker(null);
+		}
+		return () => timer && clearTimeout(timer);
+	}, [form.destination]);
+
+	function openAmapNavigation() {
+		if (!destMarker) return;
+		const [lng, lat] = destMarker.position;
+		const name = encodeURIComponent(destMarker.title || '目的地');
+		const url = `https://uri.amap.com/marker?position=${lng},${lat}&name=${name}`;
+		window.open(url, '_blank');
+	}
 
 	async function submit() {
 		setLoading(true);
@@ -112,6 +156,14 @@ export default function Page() {
 
 	return (
 		<div className="col" style={{ gap: 16 }}>
+			<div className="hero col">
+				<div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
+					<div className="col" style={{ gap: 4 }}>
+						<div className="section-title">AI 旅行规划</div>
+						<small>输入目的地、日期和偏好，生成个性化行程与预算建议。</small>
+					</div>
+				</div>
+			</div>
 			<div className="card col">
 				<div className="row" style={{ flexWrap: 'wrap' }}>
 					<div className="col" style={{ minWidth: 240, flex: 1 }}>
@@ -148,7 +200,7 @@ export default function Page() {
 			</div>
 
 			<div className="row" style={{ alignItems: 'flex-start' }}>
-				<div className="card" style={{ flex: 1 }}>
+				<div className="card" style={{ flex: 1, minWidth: 300 }}>
 					<h3 style={{ marginTop: 0 }}>行程结果</h3>
 					{plan ? (
 						<div className="col">
@@ -161,7 +213,7 @@ export default function Page() {
 						<small>提交后显示行程规划结果。</small>
 					)}
 				</div>
-				<div className="card" style={{ flex: 1 }}>
+				<div className="card" style={{ flex: 1, minWidth: 300 }}>
 					<h3 style={{ marginTop: 0 }}>预算估计</h3>
 					{budget ? <pre style={{ whiteSpace: 'pre-wrap' }}>{budget}</pre> : <small>点击“估算预算”查看。</small>}
 				</div>
@@ -169,10 +221,23 @@ export default function Page() {
 
 			<div className="card">
 				<h3 style={{ marginTop: 0 }}>地图</h3>
-				<MapAmap onMapClick={pos => {
+				<MapAmap
+					center={destCenter}
+					markers={destMarker ? [{ position: destMarker.position, title: destMarker.title, description: '点击可在高德中导航' }] : []}
+					onMarkerClick={() => openAmapNavigation()}
+					onMapClick={pos => {
 					setClickedLng(pos[0].toFixed(6));
 					setClickedLat(pos[1].toFixed(6));
 				}} />
+				<div className="row" style={{ marginTop: 8, gap: 8, flexWrap: 'wrap' }}>
+					<div className="col" style={{ minWidth: 240 }}>
+						<label>国家/城市（可选，用于更精准定位）</label>
+						<input value={region} onChange={e => setRegion(e.target.value)} placeholder="示例：日本 或 日本东京 或 Tokyo, Japan" />
+					</div>
+				</div>
+				<div className="row" style={{ marginTop: 8, gap: 8, flexWrap: 'wrap' }}>
+					<button className="ghost" onClick={openAmapNavigation} disabled={!destMarker}>在高德地图中导航</button>
+				</div>
 				<div className="row" style={{ marginTop: 8, gap: 8, flexWrap: 'wrap' }}>
 					<div className="col">
 						<label>经度</label>
