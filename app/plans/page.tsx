@@ -4,6 +4,7 @@ import { useRouter } from 'next/navigation';
 import { supabase } from '../../lib/supabaseClient';
 import { AuthContext } from '../../components/AuthProvider';
 import { MapAmap, MapMarker } from '../../components/MapAmap';
+import { PieChart } from '../../components/PieChart';
 
 type TravelPlanRow = {
 	id: string;
@@ -27,6 +28,18 @@ type TravelPlanSpotRow = {
 	created_at: string;
 };
 
+type TravelExpenseRow = {
+	id: string;
+	plan_id: string;
+	user_id: string;
+	amount: number;
+	category: string | null;
+	note: string | null;
+	currency: string | null;
+	occurred_at: string | null;
+	created_at: string;
+};
+
 export default function PlansPage() {
 	const router = useRouter();
 	const { user, loading } = React.useContext(AuthContext);
@@ -40,6 +53,12 @@ export default function PlansPage() {
 	const [mapCenter, setMapCenter] = React.useState<[number, number] | undefined>(undefined);
 	const [geoLoading, setGeoLoading] = React.useState(false);
 	const [geoCity, setGeoCity] = React.useState('');
+	const [expenses, setExpenses] = React.useState<TravelExpenseRow[]>([]);
+	const [expenseForm, setExpenseForm] = React.useState({ amount: '', category: '交通', currency: 'CNY', note: '', date: '' });
+	const [expenseSaving, setExpenseSaving] = React.useState(false);
+	const [expenseLoading, setExpenseLoading] = React.useState(false);
+	const [analysis, setAnalysis] = React.useState<string>('');
+	const [analyzing, setAnalyzing] = React.useState(false);
 
 	React.useEffect(() => {
 		if (!supabase) return;
@@ -57,8 +76,10 @@ export default function PlansPage() {
 		if (!supabase) return;
 		if (selected) {
 			loadSpots(selected.id);
+			loadExpenses(selected.id);
 		} else {
 			setSpots([]);
+			setExpenses([]);
 		}
 	// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [selected?.id]);
@@ -112,6 +133,24 @@ export default function PlansPage() {
 		}
 	}
 
+	async function loadExpenses(planId: string) {
+		setExpenseLoading(true);
+		try {
+			const { data, error } = await supabase
+				.from<TravelExpenseRow>('travel_expenses')
+				.select('*')
+				.eq('plan_id', planId)
+				.eq('user_id', user!.id)
+				.order('occurred_at', { ascending: false });
+			if (error) throw error;
+			setExpenses(data ?? []);
+		} catch (e: any) {
+			alert(e.message || '加载支出失败');
+		} finally {
+			setExpenseLoading(false);
+		}
+	}
+
 	function handleSelectPlan(plan: TravelPlanRow) {
 		setSelected(plan);
 	}
@@ -126,6 +165,92 @@ export default function PlansPage() {
 			setSpots([]);
 		} catch (e: any) {
 			alert(e.message || '删除失败');
+		}
+	}
+
+	async function addExpense(e: React.FormEvent) {
+		e.preventDefault();
+		if (!selected) return;
+		const amount = Number(expenseForm.amount);
+		if (Number.isNaN(amount) || amount <= 0) {
+			alert('请输入正确的金额');
+			return;
+		}
+		setExpenseSaving(true);
+		try {
+			const payload = {
+				plan_id: selected.id,
+				user_id: user!.id,
+				amount,
+				category: expenseForm.category,
+				note: expenseForm.note || null,
+				currency: expenseForm.currency || 'CNY',
+				occurred_at: expenseForm.date || null
+			};
+			const { data, error } = await supabase
+				.from<TravelExpenseRow>('travel_expenses')
+				.insert(payload)
+				.select()
+				.single();
+			if (error) throw error;
+			if (data) {
+				setExpenses(prev => [data, ...prev]);
+				setExpenseForm({ amount: '', category: '交通', currency: 'CNY', note: '', date: '' });
+			}
+		} catch (e: any) {
+			alert(e.message || '新增支出失败');
+		} finally {
+			setExpenseSaving(false);
+		}
+	}
+
+	async function deleteExpense(id: string) {
+		if (!confirm('确认删除该支出吗？')) return;
+		try {
+			const { error } = await supabase
+				.from('travel_expenses')
+				.delete()
+				.eq('id', id)
+				.eq('user_id', user!.id);
+			if (error) throw error;
+			setExpenses(prev => prev.filter(e => e.id !== id));
+		} catch (e: any) {
+			alert(e.message || '删除支出失败');
+		}
+	}
+
+	const totalAmount = expenses.reduce((sum, it) => sum + (Number(it.amount) || 0), 0);
+	const byCategory = expenses.reduce<Record<string, number>>((acc, e) => {
+		const key = e.category || '其他';
+		acc[key] = (acc[key] || 0) + (Number(e.amount) || 0);
+		return acc;
+	}, {});
+	const pieData = Object.entries(byCategory).map(([label, value]) => ({ label, value }));
+
+	async function analyzeBudget() {
+		if (!selected) return;
+		setAnalyzing(true);
+		setAnalysis('');
+		try {
+			const res = await fetch('/api/budget/analyze', {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json',
+					'X-LLM-API-Key': localStorage.getItem('llm_api_key') ?? '',
+					'X-LLM-Model': localStorage.getItem('llm_model') ?? ''
+				},
+				body: JSON.stringify({
+					plan: selected,
+					expenses: expenses
+				})
+			});
+			if (!res.ok) throw new Error('分析失败');
+			const data = await res.json();
+			setAnalysis(data.analysis || '');
+		} catch (e: any) {
+			alert(e.message || '分析失败');
+		} finally {
+			setAnalyzing(false);
 		}
 	}
 
@@ -307,6 +432,161 @@ export default function PlansPage() {
 						{typeof selected.budget === 'number' && <small>预算：{selected.budget}</small>}
 						<small>人数：{selected.num_people ?? '-'}</small>
 						<pre style={{ whiteSpace: 'pre-wrap' }}>{selected.content}</pre>
+
+						<div className="col" style={{ gap: 12 }}>
+							<h4 style={{ margin: 0 }}>预算管理</h4>
+							<form className="col" onSubmit={addExpense}>
+								<div className="row" style={{ flexWrap: 'wrap', gap: 8 }}>
+									<input
+										style={{ width: 120 }}
+										type="number"
+										min="0"
+										step="0.01"
+										placeholder="金额"
+										value={expenseForm.amount}
+										onChange={e => setExpenseForm({ ...expenseForm, amount: e.target.value })}
+										required
+									/>
+									<select
+										style={{ width: 120 }}
+										value={expenseForm.category}
+										onChange={e => setExpenseForm({ ...expenseForm, category: e.target.value })}
+									>
+										<option>交通</option>
+										<option>住宿</option>
+										<option>餐饮</option>
+										<option>门票</option>
+										<option>购物</option>
+										<option>其他</option>
+									</select>
+									<select
+										style={{ width: 100 }}
+										value={expenseForm.currency}
+										onChange={e => setExpenseForm({ ...expenseForm, currency: e.target.value })}
+									>
+										<option value="CNY">CNY</option>
+										<option value="JPY">JPY</option>
+										<option value="USD">USD</option>
+										<option value="EUR">EUR</option>
+									</select>
+									<input
+										style={{ width: 160 }}
+										type="date"
+										value={expenseForm.date}
+										onChange={e => setExpenseForm({ ...expenseForm, date: e.target.value })}
+									/>
+								</div>
+								<textarea
+									rows={2}
+									placeholder="备注（可选）"
+									value={expenseForm.note}
+									onChange={e => setExpenseForm({ ...expenseForm, note: e.target.value })}
+								/>
+								<div className="row">
+									<button className="primary" type="submit" disabled={expenseSaving}>
+										{expenseSaving ? '保存中...' : '新增支出'}
+									</button>
+								</div>
+							</form>
+							<div className="row" style={{ justifyContent: 'space-between' }}>
+								<small>共 {expenses.length} 条记录</small>
+								<small>合计：{totalAmount.toFixed(2)}（以记录币种逐条累加）</small>
+							</div>
+							<div className="col" style={{ gap: 8 }}>
+								{expenseLoading ? (
+									<small>加载支出中...</small>
+								) : expenses.length === 0 ? (
+									<small>暂无支出记录。</small>
+								) : (
+									expenses.map(exp => (
+										<div key={exp.id} className="card" style={{ padding: 10 }}>
+											<div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
+												<strong>{exp.amount} {exp.currency || 'CNY'}</strong>
+												<button className="ghost" onClick={() => deleteExpense(exp.id)}>删除</button>
+											</div>
+											<small>{exp.category || '其他'} | {exp.occurred_at ? new Date(exp.occurred_at).toLocaleDateString() : '未指定日期'}</small>
+											{exp.note && <small>{exp.note}</small>}
+										</div>
+									))
+								)}
+							</div>
+							<div className="row">
+								<button className="ghost" onClick={analyzeBudget} disabled={analyzing}>
+									{analyzing ? '分析中...' : 'AI 预算分析'}
+								</button>
+								<button
+									className="ghost"
+									onClick={() => {
+										if (!selected) return;
+										// CSV 导出
+										const headers = ['amount', 'currency', 'category', 'date', 'note'];
+										const lines = [headers.join(',')];
+										for (const e of expenses) {
+											const row = [
+												String(e.amount),
+												e.currency || '',
+												(e.category || '').replace(/,/g, ' '),
+												e.occurred_at || '',
+												(e.note || '').replace(/[\r\n,]/g, ' ')
+											];
+											lines.push(row.join(','));
+										}
+										const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8' });
+										const url = URL.createObjectURL(blob);
+										const a = document.createElement('a');
+										a.href = url;
+										a.download = `${selected.title || 'expenses'}.csv`;
+										document.body.appendChild(a);
+										a.click();
+										document.body.removeChild(a);
+										URL.revokeObjectURL(url);
+									}}
+								>
+									导出 CSV
+								</button>
+								<button
+									className="ghost"
+									onClick={async () => {
+										if (!selected) return;
+										const xlsx = await import('xlsx');
+										const rows = expenses.map(e => ({
+											金额: e.amount,
+											币种: e.currency || 'CNY',
+											分类: e.category || '其他',
+											日期: e.occurred_at || '',
+											备注: e.note || ''
+										}));
+										const ws = xlsx.utils.json_to_sheet(rows);
+										const wb = xlsx.utils.book_new();
+										xlsx.utils.book_append_sheet(wb, ws, '支出');
+										const wbout = xlsx.write(wb, { bookType: 'xlsx', type: 'array' });
+										const blob = new Blob([wbout], { type: 'application/octet-stream' });
+										const url = URL.createObjectURL(blob);
+										const a = document.createElement('a');
+										a.href = url;
+										a.download = `${selected.title || 'expenses'}.xlsx`;
+										document.body.appendChild(a);
+										a.click();
+										document.body.removeChild(a);
+										URL.revokeObjectURL(url);
+									}}
+								>
+									导出 Excel
+								</button>
+							</div>
+							{pieData.length > 0 && (
+								<div className="card">
+									<h4 style={{ marginTop: 0 }}>分类支出占比</h4>
+									<PieChart data={pieData} />
+								</div>
+							)}
+							{analysis && (
+								<div className="card">
+									<h4 style={{ marginTop: 0 }}>分析结果</h4>
+									<pre style={{ whiteSpace: 'pre-wrap' }}>{analysis}</pre>
+								</div>
+							)}
+						</div>
 						<div className="col" style={{ gap: 12 }}>
 							<h4 style={{ margin: 0 }}>地图标记</h4>
 							<MapAmap
